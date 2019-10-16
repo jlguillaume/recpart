@@ -1,35 +1,8 @@
 #include "partition.h"
 
-#define K 5
-#define MIN_IMPROVEMENT 0.005
-
-unsigned long randomPartition(adjlist *g,unsigned long *lab);
-unsigned long louvainPartition(adjlist *g, unsigned long *lab);
-
-partitionFunction choose_partition(char *c){
-	printf("Chosen partition algorithm: ");
-	if (strcmp(c,"0")==0){
-		printf("Random partition\n");
-		return randomPartition;
-	}
-	//if (strcmp(c,"1")==0){
-	//	printf("Greedy Sparsest Cut\n");
-	//	return greedySparsestcut;
-	//}
-
-	if (strcmp(c,"2")==0){
-		printf("Louvain partition\n");
-		return louvainPartition;
-	}
-	printf("unknown\n");
-	exit(1);
-}
-
-// -----------------------------------------------------------
-// START Random utility functions
 
 //generating n random labels (boolean values)
-unsigned long randomPartition(adjlist *g,unsigned long *lab){
+unsigned long init(adjlist *g,unsigned long *lab){
 	unsigned long i,n=g->n;
 	unsigned long nlab=(K>n)?n:K;
 
@@ -41,9 +14,19 @@ unsigned long randomPartition(adjlist *g,unsigned long *lab){
 	return nlab;
 }
 
-
-// END Random utility functions
-// -----------------------------------------------------------
+partition choose_partition(char *c){
+	printf("Chosen partition algorithm: ");
+	if (strcmp(c,"0")==0){
+		printf("Random partition\n");
+		return init;
+	}
+	if (strcmp(c,"1")==0){
+		printf("Louvain partition\n");
+		return louvain;
+	}
+	printf("unknown\n");
+	exit(1);
+}
 
 
 // -----------------------------------------------------------
@@ -69,8 +52,53 @@ unsigned long * mySort(unsigned long *part, unsigned long size) {
 */
 
 
+inline long double degreeWeighted(adjlist *g, unsigned long node) {
+  unsigned long long i;
+  if (g->weights == NULL) {
+    return 1.*(g->cd[node + 1] - g->cd[node]);
+  }
 
-void freeLouvainPartition(partition *p) {
+  long double res = 0.0L;
+  for (i = g->cd[node]; i < g->cd[node + 1]; i++) {
+    res += g->weights[i];
+  }
+  return res;
+}
+
+inline long double selfloopWeighted(adjlist *g, unsigned long node) {
+  unsigned long long i;
+
+  for (i = g->cd[node]; i < g->cd[node + 1]; i++) {
+    if (g->adj[i] == node) {
+      return (g->weights == NULL)?1.0:g->weights[i];
+    }
+  }
+
+  return 0.0;
+}
+
+inline void removeNode(louvainPartition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm) {
+  p->in[comm]  -= 2.0L * dnodecomm + selfloopWeighted(g, node);
+  p->tot[comm] -= degreeWeighted(g, node);
+}
+
+inline void insertNode(louvainPartition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm) {
+  p->in[comm]  += 2.0L * dnodecomm + selfloopWeighted(g, node);
+  p->tot[comm] += degreeWeighted(g, node);
+  
+  p->node2Community[node] = comm;
+}
+
+inline long double gain(louvainPartition *p, adjlist *g, unsigned long comm, long double dnc, long double degc) {
+  long double totc = p->tot[comm];
+  long double m2   = g->totalWeight;
+  
+  return (dnc - totc*degc/m2);
+}
+
+
+
+void freeLouvainPartition(louvainPartition *p) {
   free(p->in);
   free(p->tot);
   free(p->neighCommWeights);
@@ -80,44 +108,48 @@ void freeLouvainPartition(partition *p) {
 }
 
 
-partition *createLouvainPartition(adjlist *g) {
-  partition *p = (partition *)malloc(sizeof(partition));
+louvainPartition *createLouvainPartition(adjlist *g) {
+  unsigned long i;
+
+  louvainPartition *p = malloc(sizeof(louvainPartition));
 
   p->size = g->n;
 
-  p->node2Community = (unsigned long *)malloc(p->size * sizeof(unsigned long));
-  p->in = (long double *)malloc(p->size * sizeof(long double));
-  p->tot = (long double *)malloc(p->size * sizeof(long double));
+  p->node2Community = malloc(p->size * sizeof(unsigned long));
+  p->in = malloc(p->size * sizeof(long double));
+  p->tot = malloc(p->size * sizeof(long double));
 
-  p->neighCommWeights = (long double *)malloc(p->size * sizeof(long double));
-  p->neighCommPos = (unsigned long *)malloc(p->size * sizeof(unsigned long));
+  p->neighCommWeights = malloc(p->size * sizeof(long double));
+  p->neighCommPos = malloc(p->size * sizeof(unsigned long));
   p->neighCommNb = 0;
 
-  for (unsigned long node = 0; node < p->size; node++) {
-    p->node2Community[node] = node;
-    p->in[node]  = selfloopWeighted(g, node);
-    p->tot[node] = degreeWeighted(g, node);
-    p->neighCommWeights[node] = -1;
-    p->neighCommPos[node] = 0;
+  for (i = 0; i < p->size; i++) {
+    p->node2Community[i] = i;
+    p->in[i]  = selfloopWeighted(g, i);
+    p->tot[i] = degreeWeighted(g, i);
+    p->neighCommWeights[i] = -1;
+    p->neighCommPos[i] = 0;
   }
 
   return p;
 }
 
-long double modularity(partition *p, adjlist *g) {
+long double modularity(louvainPartition *p, adjlist *g) {
   long double q  = 0.0L;
   long double m2 = g->totalWeight;
+  unsigned long i;
 
-  for (unsigned long node = 0; node < p->size; node++) {
-    if (p->tot[node] > 0.0L)
-      q += p->in[node] - (p->tot[node] * p->tot[node]) / m2;
+  for (i = 0; i < p->size; i++) {
+    if (p->tot[i] > 0.0L)
+      q += p->in[i] - (p->tot[i] * p->tot[i]) / m2;
   }
 
   return q / m2;
 }
 
-void neighCommunitiesInit(partition *p) {
-  for (unsigned long i = 0; i < p->neighCommNb; i++) {
+void neighCommunitiesInit(louvainPartition *p) {
+  unsigned long i;
+  for (i = 0; i < p->neighCommNb; i++) {
     p->neighCommWeights[p->neighCommPos[i]] = -1;
   }
   p->neighCommNb = 0;
@@ -126,16 +158,19 @@ void neighCommunitiesInit(partition *p) {
 /*
 Computes the set of neighbor communities of a given node (excluding self-loops)
 */
-void neighCommunities(partition *p, adjlist *g, unsigned long node) {
+void neighCommunities(louvainPartition *p, adjlist *g, unsigned long node) {
+  unsigned long long i;
+  unsigned long neigh, neighComm;
+  long double neighW;
   p->neighCommPos[0] = p->node2Community[node];
   p->neighCommWeights[p->neighCommPos[0]] = 0.;
   p->neighCommNb = 1;
 
   // for all neighbors of node, add weight to the corresponding community
-  for (unsigned long long i = g->cd[node]; i < g->cd[node + 1]; i++) {
-    unsigned long neigh  = g->adj[i];
-    unsigned long neighComm = p->node2Community[neigh];
-    long double neighW = (g->weights == NULL)?1.0:g->weights[i];
+  for (i = g->cd[node]; i < g->cd[node + 1]; i++) {
+    neigh  = g->adj[i];
+    neighComm = p->node2Community[neigh];
+    neighW = (g->weights == NULL)?1.0:g->weights[i];
 
     // if not a self-loop
     if (neigh != node) {
@@ -155,11 +190,15 @@ Same behavior as neighCommunities except:
 - self loop are counted
 - data structure if not reinitialised
 */
-void neighCommunitiesAll(partition *p, adjlist *g, unsigned long node) {
-  for (unsigned long long i = g->cd[node]; i < g->cd[node + 1]; i++) {
-    unsigned long neigh  = g->adj[i];
-    unsigned long neighComm = p->node2Community[neigh];
-    long double neighW = (g->weights == NULL)?1.0:g->weights[i];
+void neighCommunitiesAll(louvainPartition *p, adjlist *g, unsigned long node) {
+  unsigned long long i;
+  unsigned long neigh, neighComm;
+  long double neighW;
+
+  for (i = g->cd[node]; i < g->cd[node + 1]; i++) {
+    neigh  = g->adj[i];
+    neighComm = p->node2Community[neigh];
+    neighW = (g->weights == NULL)?1.0:g->weights[i];
     
     // if community is new
     if (p->neighCommWeights[neighComm] == -1) {
@@ -172,18 +211,18 @@ void neighCommunitiesAll(partition *p, adjlist *g, unsigned long node) {
 }
 
 
-unsigned long updatePartition(partition *p, unsigned long *part, unsigned long size) {
+unsigned long updatePartition(louvainPartition *p, unsigned long *part, unsigned long size) {
   // Renumber the communities in p
-  unsigned long *renumber = (unsigned long *)calloc(p->size, sizeof(unsigned long));
-  unsigned long last = 1;
-  for (unsigned node = 0; node < p->size; node++) {
-    if (renumber[p->node2Community[node]] == 0) {
-      renumber[p->node2Community[node]] = last++;
+  unsigned long *renumber = calloc(p->size, sizeof(unsigned long));
+  unsigned long i, last = 1;
+  for (i = 0; i < p->size; i++) {
+    if (renumber[p->node2Community[i]] == 0) {
+      renumber[p->node2Community[i]] = last++;
     }
   }
 
   // Update part with the renumbered communities in p
-  for (unsigned long i = 0; i < size; i++) {
+  for (i = 0; i < size; i++) {
     part[i] = renumber[p->node2Community[part[i]]] - 1;
   }
 
@@ -193,11 +232,15 @@ unsigned long updatePartition(partition *p, unsigned long *part, unsigned long s
 
 
 // Compute one pass of Louvain and returns the improvement
-long double louvainOneLevel(partition *p, adjlist *g) {
+long double louvainOneLevel(louvainPartition *p, adjlist *g) {
   unsigned long nbMoves;
   long double startModularity = modularity(p, g);
   long double newModularity = startModularity;
   long double curModularity;
+  unsigned long i,j,node;
+  unsigned long oldComm,newComm,bestComm;
+  long double degreeW, bestCommW, bestGain, newGain;
+
 
   // generate a random order for nodes' movements
   /*
@@ -223,11 +266,10 @@ long double louvainOneLevel(partition *p, adjlist *g) {
     //   remove the node from its community
     //   compute the gain for its insertion in all neighboring communities
     //   insert it in the best community with the highest gain
-    for (unsigned long i = 0; i < g->n; i++) {
-      unsigned long node = i;//randomOrder[nodeTmp];
-      unsigned long oldComm = p->node2Community[node];
-      long double degreeW = degreeWeighted(g, node);
-
+    for (i = 0; i < g->n; i++) {
+      node = i;//randomOrder[nodeTmp];
+      oldComm = p->node2Community[node];
+      degreeW = degreeWeighted(g, node);
 
       // computation of all neighboring communities of current node
       neighCommunitiesInit(p);
@@ -235,15 +277,18 @@ long double louvainOneLevel(partition *p, adjlist *g) {
 
       // remove node from its current community
       removeNode(p, g, node, oldComm, p->neighCommWeights[oldComm]);
+      //      printf("remove %lu from %lu\n", node, oldComm);
 
       // compute the gain for all neighboring communities
       // default choice is the former community
-      unsigned long bestComm = oldComm;
-      long double bestCommW  = 0.0L;
-      long double bestGain = 0.0L;
-      for (unsigned long i = 0; i < p->neighCommNb; i++) {
-	unsigned long newComm = p->neighCommPos[i];
-	long double newGain = gain(p, g, newComm, p->neighCommWeights[newComm], degreeW);
+      bestComm = oldComm;
+      bestCommW  = 0.0L;
+      bestGain = 0.0L;
+      for (j = 0; j < p->neighCommNb; j++) {
+	newComm = p->neighCommPos[j];
+	newGain = gain(p, g, newComm, p->neighCommWeights[newComm], degreeW);
+
+	//printf("try %lu %lu in %lu : %Lf\n", j, node, newComm, newGain);
 
 	if (newGain > bestGain) {
 	  bestComm = newComm;
@@ -254,6 +299,7 @@ long double louvainOneLevel(partition *p, adjlist *g) {
 
       // insert node in the nearest community
       insertNode(p, g, node, bestComm, bestCommW);
+      // printf("insert %lu to %lu\n", node, bestComm);
 
       if (bestComm != oldComm) {
 	nbMoves++;
@@ -269,24 +315,27 @@ long double louvainOneLevel(partition *p, adjlist *g) {
   return newModularity - startModularity;
 }
 
-unsigned long louvainPartition(adjlist *g, unsigned long *lab) {
+unsigned long louvain(adjlist *g, unsigned long *lab) {
+  unsigned long i,n;
+  long double improvement;
   // Initialize partition with trivial communities
-  for (unsigned long i = 0; i < g->n; i++) {
+  for (i = 0; i < g->n; i++) {
     lab[i] = i;
   }
-  
+
   // Execution of Louvain method
   //  while(1) {
-    partition *gp = createLouvainPartition(g);
-    long double improvement = louvainOneLevel(gp, g);
+    louvainPartition *gp = createLouvainPartition(g);
+
+    improvement = louvainOneLevel(gp, g);
+
     //    if (improvement < MIN_IMPROVEMENT) {
     //      freeLouvainPartition(gp);
     //      break;
     //    }
     
-    unsigned long n = updatePartition(gp, lab, g->n);
+    n = updatePartition(gp, lab, g->n);
     
-
     //adjlist *g2 = partition2Graph(gp, g);
     //    if (g->n < size) {
     //      freeGraph(g);
@@ -302,3 +351,4 @@ unsigned long louvainPartition(adjlist *g, unsigned long *lab) {
 
 // END Louvain utility functions
 // -----------------------------------------------------------
+

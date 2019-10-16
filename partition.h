@@ -7,11 +7,15 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef unsigned long (*partitionFunction)(adjlist*,unsigned long*);
-partitionFunction choose_partition(char*);
+#define K 5
 
+typedef unsigned long (*partition)(adjlist*,unsigned long*);
 
+partition choose_partition(char*);
 
+unsigned long init(adjlist *g,unsigned long *lab);
+
+unsigned long louvain(adjlist *g, unsigned long *lab);
 
 // -----------------------------------------------------------
 // START Louvain utility functions
@@ -23,19 +27,35 @@ partitionFunction choose_partition(char*);
     @param node The node whose degree must be calculated
     @return the weighted degree of the node
 */
+
+#define MIN_IMPROVEMENT 0.005
+
+// louvain partition
+typedef struct {
+  // size of the partition
+  unsigned long size;
+  
+  // community to which each node belongs
+  unsigned long *node2Community;
+  
+  // in and tot values of each node to compute modularity 
+  long double *in;
+  long double *tot;
+
+  // utility arrays to find communities adjacent to a node
+  // communities are stored using three variables
+  // - neighCommWeights: stores weights to communities
+  // - neighCommPos: stores list of neighbor communities
+  // - neighCommNb: stores the number of neighbor communities
+  long double *neighCommWeights;
+  unsigned long *neighCommPos;
+  unsigned long neighCommNb;
+} louvainPartition;
+
+
+unsigned long louvain(adjlist *g,unsigned long *lab);
+
 inline long double degreeWeighted(adjlist *g, unsigned long node);
-
-inline long double degreeWeighted(adjlist *g, unsigned long node) {
-  if (g->weights == NULL) {
-    return 1.*(g->cd[node + 1] - g->cd[node]);
-  }
-
-  long double res = 0.0L;
-  for (unsigned long long i = g->cd[node]; i < g->cd[node + 1]; i++) {
-    res += g->weights[i];
-  }
-  return res;
-}
 
 
 /**
@@ -48,23 +68,13 @@ inline long double degreeWeighted(adjlist *g, unsigned long node) {
 */
 inline long double selfloopWeighted(adjlist *g, unsigned long node);
 
-inline long double selfloopWeighted(adjlist *g, unsigned long node) {
-  for (unsigned long long i = g->cd[node]; i < g->cd[node + 1]; i++) {
-    if (g->adj[i] == node) {
-      return (g->weights == NULL)?1.0:g->weights[i];
-    }
-  }
-
-  return 0.0;
-}
-
 /**
     Frees a louvain partition and all pointers attached to it
 
     @param p The Louvain partition
     @return nothing
 */
-void freeLouvainPartition(partition *p);
+void freeLouvainPartition(louvainPartition *p);
 
 /**
     Creates a louvain partition from a graph and initializes it
@@ -72,7 +82,7 @@ void freeLouvainPartition(partition *p);
     @param g The graph for which a partition has to be createed
     @return The louvain partition
 */
-partition *createLouvainPartition(adjlist *g);
+louvainPartition *createLouvainPartition(adjlist *g);
 
 /**
     Computes modularity of the given graphPartitio
@@ -81,7 +91,7 @@ partition *createLouvainPartition(adjlist *g);
     @param g The partitionned graph
     @return The modularity of the partition
 */
-long double modularity(partition *p, adjlist *g);
+long double modularity(louvainPartition *p, adjlist *g);
 
 /**
    Computes the set of neighboring communities of node
@@ -91,13 +101,13 @@ long double modularity(partition *p, adjlist *g);
    @param node The node whose neighbor communities must be computed
    @return Nothing
 */
-void neighCommunities(partition *p, adjlist *g, unsigned long node);
+void neighCommunities(louvainPartition *p, adjlist *g, unsigned long node);
 
 // updates a given partition with the current Louvain partition
 unsigned long updateGraphPartition(partition *p, unsigned long *part, unsigned long size);
 
 // generates the binary graph of communities as computed by one_level
-adjlist * partition2Graph(partition *p, adjlist *g);
+adjlist * partition2Graph(louvainPartition *p, adjlist *g);
 
 /**
     Computes one level of Louvain (iterations over all nodes until no improvement
@@ -107,7 +117,7 @@ adjlist * partition2Graph(partition *p, adjlist *g);
     @param minImprovement The minimal improvement under which the process stops
     @return the increase of modularity during the level
 */
-long double louvainOneLevel(partition *p, adjlist *g);
+long double louvainOneLevel(louvainPartition *p, adjlist *g);
 
 /**
     Computes a partition with the Louvain method
@@ -128,12 +138,7 @@ unsigned long louvain(adjlist *g, unsigned long *part);
     @param dnodecomm The weighted degree from node to comm
     @return nothing
 */
-inline void removeNode(partition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm);
-
-inline void removeNode(partition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm) {
-  p->in[comm]  -= 2.0L * dnodecomm + selfloopWeighted(g, node);
-  p->tot[comm] -= degreeWeighted(g, node);
-}
+inline void removeNode(louvainPartition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm);
 
 /**
     Adds a node to a community and update modularity
@@ -145,15 +150,7 @@ inline void removeNode(partition *p, adjlist *g, unsigned long node, unsigned lo
     @param dnodecomm The weighted degree from node to comm
     @return nothing
 */
-inline void insertNode(partition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm);
-
-inline void insertNode(partition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm) {
-  p->in[comm]  += 2.0L * dnodecomm + selfloopWeighted(g, node);
-  p->tot[comm] += degreeWeighted(g, node);
-  
-  p->node2Community[node] = comm;
-}
-
+inline void insertNode(louvainPartition *p, adjlist *g, unsigned long node, unsigned long comm, long double dnodecomm);
 
 /**
     Computes the increase of modularity if a node where to be added to a given community
@@ -167,18 +164,10 @@ inline void insertNode(partition *p, adjlist *g, unsigned long node, unsigned lo
     @param nodeDegree The weighted degree of the node
     @return nothing
 */
-inline long double gain(partition *p, adjlist *g, unsigned long comm, long double dnodecomm, long double nodeDegree);
-
-inline long double gain(partition *p, adjlist *g, unsigned long comm, long double dnc, long double degc) {
-  long double totc = p->tot[comm];
-  long double m2   = g->totalWeight;
-  
-  //  printf("%Lf %Lf %Lf %Lf\n", dnc, totc, degc, m2);
-
-  return (dnc - totc*degc/m2);
-}
+inline long double gain(louvainPartition *p, adjlist *g, unsigned long comm, long double dnodecomm, long double nodeDegree);
 
 // END Louvain utility functions
 // -----------------------------------------------------------
+
 
 #endif
